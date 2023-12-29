@@ -46,8 +46,8 @@ class DataLoader:
     def __next__(self) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.iter_count == 0:
             self.idxs = list(range(self.n))
-        if self.shuffle:
-            random.shuffle(self.idxs)
+            if self.shuffle:
+                random.shuffle(self.idxs)
         if (self.iter_count+1)*self.batch_size > self.n:
             self.iter_count = 0
             raise StopIteration
