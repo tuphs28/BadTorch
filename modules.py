@@ -36,9 +36,9 @@ class Linear:
     """
 
     def __init__(self, in_dim: int, out_dim: int, device: torch.device = torch.device("cpu"), bias: bool = True) -> None:
-        # init weights
-        self.weight = torch.rand((in_dim, out_dim)).to(device) / (in_dim ** 0.5)
-        self.bias = torch.zeros((out_dim)).to(device) if bias else None
+        # init weights with Xavier initialisation
+        self.weight = torch.randn((in_dim, out_dim)).to(device) / (in_dim ** 0.5)
+        self.bias = torch.randn((out_dim)).to(device) / (in_dim ** 0.5) if bias else None
 
     def __call__(self, x: torch.tensor) -> torch.tensor:
         h = x @ self.weight
@@ -151,18 +151,18 @@ class RNN:
         if h_prev is None:
             h_prev = torch.zeros(batch_size, self.hidden_dim, self.n_layers).to(self.device)
 
-        inputs = x
-        h_final = torch.zeros(batch_size, self.hidden_dim, self.n_layers).to(self.device)
+        inputs = x # buffer to track input to current hidden layer
+        h_final = torch.zeros(batch_size, self.hidden_dim, self.n_layers).to(self.device) # buffer to track hidden state of current layer at end of sequence
         for n_layer in range(self.n_layers):
             cell = self.cells[n_layer]
-            h_outputs = torch.zeros((batch_size, seq_length, self.hidden_dim)).to(self.device)
+            h_outputs = torch.zeros((batch_size, seq_length, self.hidden_dim)).to(self.device) # buffer to track cell output for each element of input sequence
             h_t = h_prev[:, :, n_layer]
             for seq_idx in range(seq_length):
                 x_t = inputs[:, seq_idx, :]
                 h_t = cell(x_t, h_t)
                 h_outputs[:, seq_idx, :] = h_t
-            inputs = h_outputs
-            h_final[:, :, n_layer] = h_t
+            inputs = h_outputs # pass outputs from current layer in as inputs to next layer
+            h_final[:, :, n_layer] = h_t # store hidden state of current layer at end of sequence
 
         return h_outputs, h_final
 

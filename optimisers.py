@@ -64,11 +64,10 @@ class Adam(Optimiser):
         beta1 (float): parameter to control running average estimate of first moment
         beta2 (float): parameter to control running average estimate of second moment
         eps (float): parameter to avoid dividing by zero when correcting bias
-        grad_clip (int): if non-zero integer provided, perform gradient clipping with this value   
-        device (torch.device): device to place buffers on, must be same as parameters that are being optimised   
+        grad_clip (int): if non-zero integer provided, perform gradient clipping with this value 
     """
 
-    def __init__(self, parameters: list, lr: float, beta1: float = 0.9, beta2: float = 0.999, eps: float = 1e-8, grad_clip: int = 0, device: torch.device = torch.device("cpu")) -> None:
+    def __init__(self, parameters: list, lr: float, beta1: float = 0.9, beta2: float = 0.999, eps: float = 1e-8, grad_clip: int = 0) -> None:
         super().__init__(parameters, lr, grad_clip)
         self.beta1 = beta1
         self.beta2 = beta2
@@ -80,8 +79,8 @@ class Adam(Optimiser):
         self.m1s = []
         self.m2s = []
         for parameter in self.parameters:
-            self.m1s.append(torch.ones(parameter.shape).to(device))
-            self.m2s.append(torch.ones(parameter.shape).to(device))
+            self.m1s.append(torch.zeros_like(parameter.shape))
+            self.m2s.append(torch.zeros_like(parameter.shape))
 
     def step(self) -> None:
         """
