@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from modules import Embedding, RNN, Linear
 
-class RecurrentModel:
+class RecurrentLanguageModel:
     """
     Class for constructing recurrent character-level language models
 
@@ -53,31 +53,40 @@ class RecurrentModel:
         parameters += self.linear.parameters()
         return parameters
 
-    def sample(self, idx_to_char_dict: dict, sample_length: int = 250) -> str:
+    def sample(self, idx_to_char_dict: dict, char_to_idx_dict: dict, prompt: str = "", sample_length: int = 250) -> str:
         """
         Sampled from recurrent language model (with random start idx) using current weights.
 
         Args:
             idx_to_char_dict (dict): dictionary mapping from index to char
+            char_to_idx_dict (dict): dictionary mapping from char to index
             sample_length (int, optional): number of chars to sample. Defaults to 250.
+            prompt (str, optional): model prompt
 
         Returns:
             str: string of output text sampled from model
         """
 
-        sampled_idxs = []
-        current_idx = torch.randint(high=self.vocab_size, size=(1,1)).to(self.device)
-        sampled_idxs.append(current_idx.item())
+        history = []
         hidden = None
+        if prompt:
+            for char in prompt:
+                current_idx = char_to_idx_dict[char]
+                history.append(current_idx)
+                current_idx = torch.Tensor([[current_idx]]).int().to(self.device)
+                out, hidden = self(current_idx, hidden)
+            else:
+                current_idx = torch.randint(high=self.vocab_size, size=(1,1)).to(self.device)
+                history.append(current_idx.item())
         for i in range(sample_length):
             out, hidden = self(current_idx, hidden)
             with torch.no_grad():
                 prob = F.softmax(out[-1], dim=0).data
             current_idx = torch.multinomial(prob, 1).view(1,1).to(self.device)
-            sampled_idxs.append(current_idx.item())
+            history.append(current_idx.item())
 
         sampled_text = []
-        for idx in sampled_idxs:
+        for idx in history:
             sampled_text.append(idx_to_char_dict[idx])
         sampled_text = "".join(sampled_text)
         return sampled_text
