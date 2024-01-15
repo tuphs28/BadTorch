@@ -67,7 +67,10 @@ class RNNCell:
         self.weight_hh = torch.randn((hidden_dim, hidden_dim)).to(device)
         self.bias = torch.zeros((hidden_dim)).to(device) if bias else None
 
-    def __call__(self, x_t: torch.Tensor, h_t: torch.Tensor) -> torch.Tensor:
+    def __call__(self, x_t: torch.Tensor, h_t: torch.Tensor, dropout_masks: list = []) -> torch.Tensor:
+        if dropout_masks:
+            x_t = x_t * dropout_masks[0]
+            h_t = h_t * dropout_masks[1]
         z_t = x_t @ self.weight_xh + h_t @ self.weight_hh
         if self.bias is not None:
             z_t += self.bias
@@ -104,7 +107,10 @@ class GRUCell:
         self.weight_hh = torch.randn(size=(hidden_dim, hidden_dim)).to(device) / (hidden_dim ** 0.5)
         self.bias_h = torch.zeros(size=(hidden_dim,)).to(device) if bias else None
 
-    def __call__(self, x_t: torch.Tensor, h_t: torch.Tensor) -> torch.Tensor:
+    def __call__(self, x_t: torch.Tensor, h_t: torch.Tensor, dropout_masks: list = []) -> torch.Tensor:
+        if dropout_masks:
+            x_t = x_t * dropout_masks[0]
+            h_t = h_t * dropout_masks[1]
         i_f = torch.sigmoid(x_t @ self.weight_xf + h_t @ self.weight_hf + (self.bias_f if self.bias_f is not None else 0))
         i_o = torch.sigmoid(x_t @ self.weight_xo + h_t @ self.weight_ho + (self.bias_o if self.bias_o is not None else 0))
         h_prop = torch.tanh(x_t @ self.weight_xh + (h_t * i_f) @ self.weight_hh + (self.bias_h if self.bias_h is not None else 0))
@@ -147,8 +153,12 @@ class LSTMCell:
         self.weight_hc = torch.randn(size=(hidden_dim, hidden_dim)).to(device) / (hidden_dim ** 0.5)
         self.bias_c = torch.zeros(size=(hidden_dim,)).to(device) if bias else None
 
-    def __call__(self, x_t: torch.Tensor, hc_t: torch.Tensor) -> torch.Tensor:
+    def __call__(self, x_t: torch.Tensor, hc_t: torch.Tensor, dropout_masks: list = []) -> torch.Tensor:
         h_t, c_t = hc_t[:, :, 0], hc_t[:, :, 1]
+        if dropout_masks:
+            x_t = x_t * dropout_masks[0]
+            h_t = h_t * dropout_masks[1]
+            c_t = c_t * dropout_masks[1]
         hc_new = torch.zeros_like(hc_t)
         i_f = torch.sigmoid(x_t @ self.weight_xf + h_t @ self.weight_hf + (self.bias_f if self.bias_f is not None else 0))
         i_i = torch.sigmoid(x_t @ self.weight_xi + h_t @ self.weight_hi + (self.bias_i if self.bias_i is not None else 0))
@@ -171,13 +181,17 @@ class RNN:
         in_dim (int): input dimension
         hidden_dim (int): dimensionality of hidden state of RNN.
         n_layers (int): number of layers of RNN cells to pass input sequence through.
-        device (torch.device): device to house cell on. Defaults to cpu.
-        bias (bool): whether to include bias in RNN cell. Defaults to True.
-        cell_type (bool): type of RNN cell to use out of: RNN, GRU, LSTM. Defaults to RNN.
+        device (torch.device, optional): device to house cell on. Defaults to cpu.
+        bias (bool, optional): whether to include bias in RNN cell. Defaults to True.
+        cell_type (bool, optional): type of RNN cell to use out of: RNN, GRU, LSTM. Defaults to RNN.
+        dropout (str, optional): type of dropout to use; if none provided, don't use dropout. Defaults to "". Must choose:
+            - standard: standard dropout as in (Srivastava et al., 2014) with different mask applied at each timestep
+            - variational: variational dropout as in (Gal & Ghahramani, 2015) with same masks applied at each timestep for a sequence
+        dropout_strength (bool, optional): dropout probability. Defaults to 0.25.
     Args
     """
 
-    def __init__(self, in_dim: int, hidden_dim: int, n_layers:int, device: torch.device = torch.device("cpu"), bias: bool = True, cell_type: str = "RNN") -> None:
+    def __init__(self, in_dim: int, hidden_dim: int, n_layers:int, device: torch.device = torch.device("cpu"), bias: bool = True, cell_type: str = "RNN", dropout: str = "", dropout_strength: float = 0.25) -> None:
         self.device = device
         self.hidden_dim = hidden_dim
         self.n_layers = n_layers
@@ -191,11 +205,11 @@ class RNN:
         elif self.cell_type == "LSTM":
             self.cells = [LSTMCell(in_dim, hidden_dim, device, bias) if i==0 else LSTMCell(hidden_dim, hidden_dim, device, bias) for i in range(n_layers)]
 
-    def __call__(self, x: torch.Tensor, h_prev: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __call__(self, x: torch.Tensor, h_prev: Optional[torch.Tensor] = None, training: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Repeatedly calls RNN cells on each unit of an input sequence. Code looks strange due to requirement that layer must be able to handle LSTM cell states. If using RNN 
         or GRU, h_t is a 3D tensor of hidden states for each batch element for each layer. If using LSTM, h_t is a 4D tensor of hidden states AND cell states or each batch 
-        element and each layer.
+        element and each layer. Tracks if model is in training mode for dropout purposes.
         """
 
         batch_size, seq_length = x.shape[:2]
@@ -226,10 +240,30 @@ class RNN:
                 h_outputs = torch.zeros((batch_size, seq_length, self.hidden_dim)).to(self.device)
                 h_t = h_prev[:, :, n_layer]
 
+            # create dropout masks for variational dropout or for eval mode - if dropout not used, just create empty list
+            if self.dropout == "":
+                dropout_masks = []
+            elif not training:
+                if self.cell_type == "LSTM":
+                    dropout_masks = [self.dropout_strength for _ in range(3)]
+                else:
+                    dropout_masks = [self.dropout_strength for _ in range(2)]
+            elif self.dropout == "variational" and  training:
+                if self.cell_type == "LSTM":
+                    dropout_masks = [(torch.rand((1,dim))>self.dropout_strength).to(torch.float32).to(self.device) for dim in [self.in_dim, self.hidden_dim, self.hidden_dim]]
+                else:
+                    dropout_masks = [(torch.rand((1,dim))>self.dropout_strength).to(torch.float32).to(self.device) for dim in [self.in_dim, self.hidden_dim]]
+
             for seq_idx in range(seq_length):
+                # create dropout masks for standard dropout
+                if self.dropout == "standard" and training:
+                    if self.cell_type == "LSTM":
+                        dropout_masks = [(torch.rand((1,dim))>self.dropout_strength).to(torch.float32).to(self.device) for dim in [self.in_dim, self.hidden_dim, self.hidden_dim]]
+                    else:
+                        dropout_masks = [(torch.rand((1,dim))>self.dropout_strength).to(torch.float32).to(self.device) for dim in [self.in_dim, self.hidden_dim]]
 
                 x_t = inputs[:, seq_idx, :]
-                h_t = cell(x_t, h_t)
+                h_t = cell(x_t, h_t, dropout_masks)
                 if self.cell_type == "LSTM":
                     h_outputs[:, seq_idx, :, :] = h_t # if LSTM, need to select hidden state separate from cell state
                 else:

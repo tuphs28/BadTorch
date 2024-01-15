@@ -13,32 +13,40 @@ class RecurrentLanguageModel:
         emb_dim (int): dimensionality of space in which to embed chars before passing in to model.
         hidden_dim (int): dimensionality of hidden state (and cell state for LSTM).
         n_layers (int): number of recurrent layers to include.
-        device (torch.device): device to house model on. Defaults to CPU.
-        bias (bool): whether to include biases in layers. Defaults to True.
-        cell_type (str): type of RNN cell to use out of:
+        device (torch.device, optional): device to house model on. Defaults to CPU.
+        bias (bool, optional): whether to include biases in layers. Defaults to True.
+        cell_type (str, optional): type of RNN cell to use out of:
             - RNN: standard RNN cell consisting of basic hidden-to-hidden updates.
             - GRU: Gated recurrent units with output and forget gates.
             - LSTM: Long short term memory units with input, output and forget gates (non-peephole config)
+        dropout (str, optional): type of dropout to use; if none provided, don't use dropout. Defaults to "". Must choose:
+            - standard: standard dropout as in (Srivastava et al., 2014) with different mask applied at each timestep
+            - variational: variational dropout as in (Gal & Ghahramani, 2015) with same masks applied at each timestep for a sequence
+        dropout_strength (bool, optional): dropout probability. Defaults to 0.25.
     """
 
-    def __init__(self, vocab_size: int, emb_dim: int, hidden_dim: int, n_layers: int, device: torch.device = torch.device("cpu"), bias: bool = True, cell_type: str = "RNN"):
+    def __init__(self, vocab_size: int, emb_dim: int, hidden_dim: int, n_layers: int, device: torch.device = torch.device("cpu"), bias: bool = True, cell_type: str = "RNN",  dropout: str = "", dropout_strength: bool = 0.25):
         self.vocab_size = vocab_size
         self.emb_dim = emb_dim
         self.hidden_dim = hidden_dim
         self.device = device
         self.cell_type = cell_type
+        self.dropout = dropout
+        self.dropout_strength = dropout_strength
 
         self.embedding = Embedding(vocab_size, emb_dim, device)
-        self.rnn = RNN(emb_dim, hidden_dim, n_layers, device, bias, cell_type)
+        self.rnn = RNN(emb_dim, hidden_dim, n_layers, device, bias, cell_type, dropout, dropout_strength)
         self.linear = Linear(hidden_dim, vocab_size, device, bias)
 
         for parameter in self.parameters():
             parameter.requires_grad = True
 
+        self.training = True # tracks whether model is in train or eval mode for dropout
+
     def __call__(self, x, h = None):
 
         embs = self.embedding(x)
-        hs, h_final = self.rnn(embs, h)
+        hs, h_final = self.rnn(embs, h, self.training)
         if self.cell_type == "LSTM": # if using LSTM cells hs contains both hidden and cell states, so need to select hidden state only to pass into next layer
             hs = hs[:,:,:,0]
         hs = hs.contiguous().view(-1, self.hidden_dim).to(self.device)
