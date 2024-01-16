@@ -245,9 +245,9 @@ class RNN:
                 dropout_masks = []
             elif not training:
                 if self.cell_type == "LSTM":
-                    dropout_masks = [self.dropout_strength for _ in range(3)]
+                    dropout_masks = [1 - self.dropout_strength for _ in range(3)]
                 else:
-                    dropout_masks = [self.dropout_strength for _ in range(2)]
+                    dropout_masks = [1 - self.dropout_strength for _ in range(2)]
             elif self.dropout == "variational" and  training:
                 if self.cell_type == "LSTM":
                     dropout_masks = [(torch.rand((1,dim))>self.dropout_strength).to(torch.float32).to(self.device) for dim in [self.in_dim, self.hidden_dim, self.hidden_dim]]
