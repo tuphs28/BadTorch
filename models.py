@@ -49,8 +49,16 @@ class RecurrentLanguageModel:
         hs, h_final = self.rnn(embs, h, self.training)
         if self.cell_type == "LSTM": # if using LSTM cells hs contains both hidden and cell states, so need to select hidden state only to pass into next layer
             hs = hs[:,:,:,0]
-        hs = hs.contiguous().view(-1, self.hidden_dim).to(self.device)
-        logits = self.linear(hs)
+
+        if self.training and self.dropout == "standard": # if using standard dropout, need to generate a new mask for each timestep and so have to sequentially pass timestep logits through linear layer
+            logits = torch.zeros(size=(hs.shape[0]*hs.shape[1], self.vocab_size), device=self.device)
+            for seq_idx in range(hs.shape[1]):
+                seq_hs = hs[:, [seq_idx], :].view(-1, self.hidden_dim).to(self.device)
+                seq_logits = self.linear(seq_hs, self.training)
+                logits[torch.arange(seq_idx, hs.shape[0]*hs.shape[1], hs.shape[1]), :] = seq_logits
+        else:
+            hs = hs.contiguous().view(-1, self.hidden_dim).to(self.device)
+            logits = self.linear(hs, self.training)
 
         return logits, h_final
 
