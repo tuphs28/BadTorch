@@ -68,20 +68,25 @@ class RecurrentLanguageModel:
         parameters += self.rnn.parameters()
         parameters += self.linear.parameters()
         return parameters
-
-    def sample(self, idx_to_char_dict: dict, char_to_idx_dict: dict, prompt: str = "", sample_length: int = 250) -> str:
-        """
-        Sampled from recurrent language model (with random start idx) using current weights.
+    
+    def sample(self, idx_to_char_dict: dict, char_to_idx_dict: dict, prompt: str = "", sample_length: int = 250, decoding_method: str = "sample", beam_width: int = 3, k: int = 10) -> str:
+        """Sampled from recurrent language model using current weights with various decoding methods.
 
         Args:
             idx_to_char_dict (dict): dictionary mapping from index to char
-            char_to_idx_dict (dict): dictionary mapping from char to index
-            sample_length (int, optional): number of chars to sample. Defaults to 250.
-            prompt (str, optional): model prompt
+            char_to_idx_dict (_type_): dictionary mapping from char to index
+            prompt (str, optional): model prompt to begin decoding with. Defaults to "".
+            sample_length (int, optional): _number of chars to sample. Defaults to 250.
+            decoding_method (str, optional): decoding method to use out of ["greedy", "sample", "top-k", "beam]. Defaults to "sample".
+            beam_width (int, optional): beam width paramter is decoding_method is set to "beam". Defaults to 3.
+            k (int, optional): size of pruned output distribution if decoding_method is set to "top-k". Defaults to 10.
 
         Returns:
-            str: string of output text sampled from model
+            str: string of output text sampled from model using the provided decoding method
         """
+
+        current_mode = self.training
+        self.training = False
 
         history = []
         hidden = None
@@ -91,18 +96,89 @@ class RecurrentLanguageModel:
                 history.append(current_idx)
                 current_idx = torch.Tensor([[current_idx]]).int().to(self.device)
                 out, hidden = self(current_idx, hidden)
-            else:
-                current_idx = torch.randint(high=self.vocab_size, size=(1,1)).to(self.device)
-                history.append(current_idx.item())
-        for i in range(sample_length):
-            out, hidden = self(current_idx, hidden)
-            with torch.no_grad():
-                prob = F.softmax(out[-1], dim=0).data
-            current_idx = torch.multinomial(prob, 1).view(1,1).to(self.device)
+        else:
+            current_idx = torch.randint(high=self.vocab_size, size=(1,1)).to(self.device)
             history.append(current_idx.item())
 
-        sampled_text = []
-        for idx in history:
-            sampled_text.append(idx_to_char_dict[idx])
-        sampled_text = "".join(sampled_text)
+        if decoding_method == "sample": # decode by merely sampling from output distribution at each step
+
+            for i in range(sample_length):
+                out, hidden = self(current_idx, hidden)
+                with torch.no_grad():
+                    prob = nn.functional.softmax(out[-1], dim=0).data
+                current_idx = torch.multinomial(prob, 1).view(1,1).to(self.device)
+                history.append(current_idx.item())
+            sampled_text = []
+            for idx in history:
+                sampled_text.append(idx_to_char_dict[idx])
+            sampled_text = "".join(sampled_text)
+
+        elif decoding_method == "greedy": # decode by taking the most porbably output at each step
+
+            for _ in range(sample_length):
+                out, hidden = self(current_idx, hidden)
+                with torch.no_grad():
+                    prob = nn.functional.softmax(out[-1], dim=0).data
+                current_idx = prob.view(-1).argmax().view(1,1)
+                history.append(current_idx.item())
+            sampled_text = []
+            for idx in history:
+                sampled_text.append(idx_to_char_dict[idx])
+            sampled_text = "".join(sampled_text)
+
+        elif decoding_method == "top-k": # decode by redistributing probability mass over the K most probable outputs and sampling
+
+            for _ in range(sample_length):
+                out, hidden = self(current_idx, hidden)
+                with torch.no_grad():
+                    prob = nn.functional.softmax(out[-1], dim=0).data
+                top_prob = torch.topk(prob, k)
+                current_idx = top_prob.indices[torch.multinomial(top_prob.values, 1)].view(1,1)
+                history.append(current_idx.item())
+            sampled_text = []
+            for idx in history:
+                sampled_text.append(idx_to_char_dict[idx])
+            sampled_text = "".join(sampled_text)
+
+        elif decoding_method == "beam": # decode with beam search
+
+            beams = []
+            current_str = "".join([idx_to_char_dict[i] for i in history])
+            beams = [
+                [current_str, 1, hidden]
+            ]
+            k = beam_width
+
+            for _ in range(sample_length):
+                new_beams = []
+                for beam in beams:
+                    current_str, prob, hidden = beam
+                    current_idx = torch.Tensor([char_to_idx_dict[current_str[-1]]]).int().view(1,1).to(self.device)
+                    logits, hidden = self(current_idx, hidden)
+                    probs = F.softmax(logits.view(-1), dim=0)
+                    for prop_idx, prop_prob in zip(torch.topk(probs, k).indices.view(-1), torch.topk(probs, k).values.view(-1)):
+                        new_prob = prob * prop_prob.item()
+                        new_str = current_str + idx_to_char_dict[prop_idx.item()]
+                        if new_str[-3:].count(" ") > 2: # penalise excessive outputing of spaces (needed due to how text files are formatted on laptop)
+                            new_prob *= 0.1**(new_str[-3:].count(" ")-1)
+                        if len(new_beams) < k:
+                            new_str = current_str + idx_to_char_dict[prop_idx.item()]
+                            new_beams.append([new_str, new_prob, hidden])
+                        else:
+                            sorted_probs = [new_beam[1] for new_beam in new_beams]
+                            sorted_probs.sort(reverse=True)
+                        if new_prob > sorted_probs[k-1]:
+                            new_str = current_str + idx_to_char_dict[prop_idx.item()]
+                            for i in range(len(new_beams)):
+                                if sorted_probs[k-1] == new_beams[i][1]:
+                                    new_beams = new_beams[:i] + [[new_str, new_prob, hidden]] + new_beams[i+1:]
+                beams = new_beams
+            max_prob = -1
+            for beam in beams:
+                if beam[1] > max_prob:
+                    max_prob = beam[1]
+                    sampled_text = beam[0]
+
+        self.training = current_mode
+
         return sampled_text
